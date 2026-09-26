@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RAG Document Q&A</title>
+<style>
+  :root {
+    --bg: #14171c;
+    --surface: #1b1f26;
+    --surface-raised: #232830;
+    --border: #2b313b;
+    --text: #e8e6e1;
+    --text-muted: #8a8f98;
+    --accent: #6fa8e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--text-muted); font-size: 13px; margin-bottom: 28px; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px;
+    margin-bottom: 20px;
+  }
+  .panel h2 { font-size: 13px; margin: 0 0 12px; color: var(--text-muted); font-weight: 600; }
+
+  .dropzone {
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .dropzone.drag { border-color: var(--accent); color: var(--text); }
+  input[type="file"] { display: none; }
+
+  .doc-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .doc-chip {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .chat { display: flex; flex-direction: column; gap: 14px; min-height: 80px; }
+  .msg { max-width: 85%; padding: 10px 13px; border-radius: 8px; font-size: 13.5px; line-height: 1.5; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #0e1521; }
+  .msg.bot { align-self: flex-start; background: var(--surface-raised); border: 1px solid var(--border); }
+  .sources { margin-top: 8px; font-size: 11.5px; color: var(--text-muted); }
+  .sources details summary { cursor: pointer; }
+  .sources pre { white-space: pre-wrap; font-family: inherit; margin: 6px 0 0; }
+
+  .ask-row { display: flex; gap: 8px; margin-top: 16px; }
+  .ask-row input {
+    flex: 1;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13.5px;
+    outline: none;
+  }
+  .ask-row input:focus { border-color: var(--accent); }
+  .ask-row button {
+    background: var(--accent);
+    color: #0e1521;
+    border: none;
+    border-radius: 6px;
+    padding: 0 18px;
+    font-weight: 600;
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  .ask-row button:disabled { opacity: 0.4; cursor: default; }
+
+  .status { font-size: 12px; color: var(--text-muted); margin-top: 8px; min-height: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>RAG Document Q&A</h1>
+  <div class="sub">PDF, TXT veya DOCX yükle; içeriğiyle ilgili soru sor.</div>
+
+  <div class="panel">
+    <h2>Doküman yükle</h2>
+    <label class="dropzone" id="dropzone">
+      Dosya seçmek için tıkla (.pdf, .txt, .docx)
+      <input type="file" id="fileInput" accept=".pdf,.txt,.docx" />
+    </label>
+    <div class="status" id="uploadStatus"></div>
+    <div class="doc-list" id="docList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Sohbet</h2>
+    <div class="chat" id="chat"></div>
+    <div class="ask-row">
+      <input type="text" id="questionInput" placeholder="Dokümanla ilgili bir soru sor…" />
+      <button id="askBtn">Sor</button>
+    </div>
+    <div class="status" id="askStatus"></div>
+  </div>
+</div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const uploadStatus = document.getElementById('uploadStatus');
+const docList = document.getElementById('docList');
+const chat = document.getElementById('chat');
+const questionInput = document.getElementById('questionInput');
+const askBtn = document.getElementById('askBtn');
+const askStatus = document.getElementById('askStatus');
+
+async function refreshDocs() {
+  const res = await fetch('/api/documents');
+  const data = await res.json();
+  docList.innerHTML = '';
+  data.documents.forEach(name => {
+    const chip = document.createElement('div');
+    chip.className = 'doc-chip';
+    chip.textContent = name;
+    docList.appendChild(chip);
+  });
+}
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) uploadFile(fileInput.files[0]);
+});
+
+async function uploadFile(file) {
+  uploadStatus.textContent = `Yükleniyor: ${file.name}…`;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const res = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Yükleme başarısız');
+    uploadStatus.textContent = `${data.doc_name} eklendi (${data.chunks_added} parça).`;
+    refreshDocs();
+  } catch (err) {
+    uploadStatus.textContent = `Hata: ${err.message}`;
+  }
+}
+
+function addMessage(role, text, sources) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.textContent = text;
+
+  if (sources && sources.length) {
+    const details = document.createElement('details');
+    details.className = 'sources';
+    const summary = document.createElement('summary');
+    summary.textContent = `${sources.length} kaynak parça`;
+    details.appendChild(summary);
+    sources.forEach((s, i) => {
+      const pre = document.createElement('pre');
+      pre.textContent = `[${i + 1}] ${s.doc_name} — parça ${s.chunk_index}\n${s.text}`;
+      details.appendChild(pre);
+    });
+    div.appendChild(details);
+  }
+
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+async function ask() {
+  const question = questionInput.value.trim();
+  if (!question) return;
+  addMessage('user', question);
+  questionInput.value = '';
+  askBtn.disabled = true;
+  askStatus.textContent = 'Yanıt oluşturuluyor…';
+
+  try {
+    const res = await fetch('/api/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Bir hata oluştu');
+    addMessage('bot', data.answer, data.sources);
+    askStatus.textContent = '';
+  } catch (err) {
+    askStatus.textContent = `Hata: ${err.message}`;
+  } finally {
+    askBtn.disabled = false;
+  }
+}
+
+askBtn.addEventListener('click', ask);
+questionInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+
+refreshDocs();
+</script>
+</body>
+</html>
